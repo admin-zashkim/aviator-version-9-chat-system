@@ -202,7 +202,7 @@ async function initDatabase() {
     `);
     console.log('✅ Channel read status table created');
 
-    // Create default admin if not exists (separate query)
+    // Create default admin if not exists
     const adminResult = await client.query('SELECT id FROM admins WHERE username = $1', ['admin']);
     
     if (adminResult.rows.length === 0) {
@@ -425,10 +425,10 @@ app.get('/api/admin/stats', authenticateAdmin, async (req, res) => {
     const unreadMessages = await pool.query('SELECT COUNT(*) FROM direct_messages WHERE is_read = false AND is_from_admin = false');
     
     res.json({
-      totalUsers: totalUsers.rows[0].count,
-      onlineUsers: onlineUsers.rows[0].count,
-      totalMessages: totalMessages.rows[0].count,
-      unreadMessages: unreadMessages.rows[0].count
+      totalUsers: parseInt(totalUsers.rows[0].count),
+      onlineUsers: parseInt(onlineUsers.rows[0].count),
+      totalMessages: parseInt(totalMessages.rows[0].count),
+      unreadMessages: parseInt(unreadMessages.rows[0].count)
     });
   } catch (error) {
     console.error('Stats error:', error);
@@ -436,7 +436,7 @@ app.get('/api/admin/stats', authenticateAdmin, async (req, res) => {
   }
 });
 
-// Get all users
+// Get all users with last message
 app.get('/api/admin/users', authenticateAdmin, async (req, res) => {
   const { filter } = req.query;
   
@@ -478,7 +478,7 @@ app.get('/api/admin/users', authenticateAdmin, async (req, res) => {
   }
 });
 
-// Get direct messages
+// Get direct messages between admin and user
 app.get('/api/messages/direct/:userId', authenticateAdmin, async (req, res) => {
   const { userId } = req.params;
   
@@ -498,7 +498,7 @@ app.get('/api/messages/direct/:userId', authenticateAdmin, async (req, res) => {
 
 // ==================== USER ROUTES ====================
 
-// Get channel messages
+// Get channel messages for user
 app.get('/api/channel/messages', authenticateUser, async (req, res) => {
   try {
     const messages = await pool.query(`
@@ -519,7 +519,7 @@ app.get('/api/channel/messages', authenticateUser, async (req, res) => {
   }
 });
 
-// Get channel members
+// Get channel members count
 app.get('/api/channel/members', async (req, res) => {
   try {
     const result = await pool.query('SELECT COUNT(*) FROM users WHERE is_online = true');
@@ -546,17 +546,34 @@ app.post('/api/channel/mark-read/:messageId', authenticateUser, async (req, res)
   }
 });
 
-// ==================== MESSAGE ROUTES ====================
+// ==================== MESSAGE ROUTES - FIXED WITH REAL USERS ====================
 
-// Send message from user to admin
+// Send message from user to admin - USING REAL USERS FROM DATABASE
 app.post('/api/messages/send', authenticateUser, async (req, res) => {
-  const { content, adminId } = req.body;
+  const { content } = req.body;
   
   if (!content || content.trim() === '') {
     return res.status(400).json({ error: 'Message cannot be empty' });
   }
   
   try {
+    // Get the REAL admin from database
+    const adminResult = await pool.query('SELECT id FROM admins ORDER BY created_at ASC LIMIT 1');
+    
+    let adminId = null;
+    if (adminResult.rows.length > 0) {
+      adminId = adminResult.rows[0].id;
+    } else {
+      // Create admin if none exists
+      const hashedPassword = await bcrypt.hash(process.env.ADMIN_PASSWORD || 'admin123@@@', 10);
+      const newAdmin = await pool.query(
+        'INSERT INTO admins (username, password_hash) VALUES ($1, $2) RETURNING id',
+        ['admin', hashedPassword]
+      );
+      adminId = newAdmin.rows[0].id;
+    }
+    
+    // Check if user is blocked
     const blocked = await pool.query('SELECT * FROM blocked_users WHERE user_id = $1', [req.user.id]);
     if (blocked.rows.length > 0 && !blocked.rows[0].is_permanently_blocked) {
       return res.status(403).json({ error: 'You are blocked from sending messages' });
@@ -569,6 +586,7 @@ app.post('/api/messages/send', authenticateUser, async (req, res) => {
       [messageId, req.user.id, adminId, content, false]
     );
     
+    // Emit to admin room
     io.to('admin-room').emit('direct-message', {
       ...message.rows[0],
       user: {
@@ -578,6 +596,7 @@ app.post('/api/messages/send', authenticateUser, async (req, res) => {
       }
     });
     
+    // Send notification to admin
     io.to('admin-room').emit('notification', {
       title: 'New Message',
       body: `${req.user.first_name} ${req.user.last_name}: ${content.substring(0, 50)}${content.length > 50 ? '...' : ''}`,
@@ -592,7 +611,7 @@ app.post('/api/messages/send', authenticateUser, async (req, res) => {
   }
 });
 
-// Send message from admin to user
+// Admin send direct message to user
 app.post('/api/admin/messages/send', authenticateAdmin, async (req, res) => {
   const { content, userId } = req.body;
   
@@ -902,7 +921,7 @@ io.on('connection', (socket) => {
       socket.join('admin-room');
       onlineUsers.set(`admin-${userId}`, { socketId: socket.id, type: 'admin' });
       
-      // DON'T update admin online status on every connection - prevents logout issues
+      // Don't update admin online status on every connection
       console.log('Admin connected:', userId);
     }
     
@@ -949,7 +968,7 @@ io.on('connection', (socket) => {
             isOnline: false
           });
         } else if (data.type === 'admin') {
-          // DO NOT update admin online status on disconnect - this prevents logout
+          // DO NOT update admin online status on disconnect
           console.log('Admin disconnected but staying logged in:', userId);
         }
         onlineUsers.delete(userId);
