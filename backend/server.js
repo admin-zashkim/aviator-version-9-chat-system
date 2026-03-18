@@ -18,7 +18,7 @@ app.set('trust proxy', 1);
 const server = http.createServer(app);
 const io = socketIo(server, {
   cors: {
-    origin: process.env.FRONTEND_URL || 'http://localhost:3000',
+    origin: process.env.FRONTEND_URL || 'https://chat-admin-aviatorv9.onrender.com',
     methods: ['GET', 'POST'],
     credentials: true
   }
@@ -29,7 +29,7 @@ app.use(helmet({
   crossOriginResourcePolicy: { policy: "cross-origin" }
 }));
 app.use(cors({
-  origin: process.env.FRONTEND_URL || 'http://localhost:3000',
+  origin: process.env.FRONTEND_URL || 'https://chat-admin-aviatorv9.onrender.com',
   credentials: true
 }));
 app.use(express.json());
@@ -94,8 +94,6 @@ async function initDatabase() {
   const client = await pool.connect();
   try {
     console.log('Initializing database...');
-    
-    // Create tables one by one - NOT all in one query!
     
     // Users table
     await client.query(`
@@ -219,7 +217,7 @@ async function initDatabase() {
     console.log('🎉 Database initialized successfully');
   } catch (error) {
     console.error('❌ Database initialization error:', error);
-    throw error; // This will cause the server to exit and Render will restart it
+    throw error;
   } finally {
     client.release();
   }
@@ -228,10 +226,11 @@ async function initDatabase() {
 // Call the function
 initDatabase().catch(err => {
   console.error('Failed to initialize database:', err);
-  process.exit(1); // Exit if database fails
+  process.exit(1);
 });
 
-// Middleware for verifying user token
+// ==================== MIDDLEWARE ====================
+
 const authenticateUser = async (req, res, next) => {
   try {
     const token = req.headers.authorization?.split(' ')[1];
@@ -250,7 +249,6 @@ const authenticateUser = async (req, res, next) => {
   }
 };
 
-// Middleware for verifying admin token
 const authenticateAdmin = async (req, res, next) => {
   try {
     const token = req.headers.authorization?.split(' ')[1];
@@ -268,36 +266,40 @@ const authenticateAdmin = async (req, res, next) => {
   }
 };
 
-// ==================== API ROUTES ====================
+// ==================== KEEP ALIVE ENDPOINTS ====================
+
+app.post('/api/admin/ping', authenticateAdmin, (req, res) => {
+  res.json({ success: true, timestamp: Date.now() });
+});
+
+app.post('/api/user/ping', authenticateUser, (req, res) => {
+  res.json({ success: true, timestamp: Date.now() });
+});
+
+// ==================== AUTH ROUTES ====================
 
 // User Signup
 app.post('/api/auth/user/signup', async (req, res) => {
   const { firstName, lastName, email, password } = req.body;
   
   try {
-    // Check if user exists
     const existingUser = await pool.query('SELECT id FROM users WHERE email = $1', [email]);
     if (existingUser.rows.length > 0) {
       return res.status(400).json({ error: 'Email already registered' });
     }
     
-    // Generate unique user ID
     const uniqueUserId = 'USER-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9);
-    
-    // Hash password
     const hashedPassword = await bcrypt.hash(password, 10);
     
-    // Create user
     const newUser = await pool.query(
       'INSERT INTO users (first_name, last_name, email, password_hash, unique_user_id) VALUES ($1, $2, $3, $4, $5) RETURNING id, first_name, last_name, email, unique_user_id',
       [firstName, lastName, email, hashedPassword, uniqueUserId]
     );
     
-    // Generate token
     const token = jwt.sign(
       { id: newUser.rows[0].id, type: 'user' },
       process.env.JWT_SECRET,
-      { expiresIn: process.env.JWT_EXPIRE }
+      { expiresIn: '30d' }
     );
     
     res.json({
@@ -331,13 +333,12 @@ app.post('/api/auth/user/login', async (req, res) => {
       return res.status(403).json({ error: 'Your account has been blocked' });
     }
     
-    // Update online status
     await pool.query('UPDATE users SET is_online = true, last_seen = CURRENT_TIMESTAMP WHERE id = $1', [user.rows[0].id]);
     
     const token = jwt.sign(
       { id: user.rows[0].id, type: 'user' },
       process.env.JWT_SECRET,
-      { expiresIn: process.env.JWT_EXPIRE }
+      { expiresIn: '30d' }
     );
     
     res.json({
@@ -373,13 +374,12 @@ app.post('/api/auth/admin/login', async (req, res) => {
       return res.status(401).json({ error: 'Invalid credentials' });
     }
     
-    // Update online status
     await pool.query('UPDATE admins SET is_online = true, last_seen = CURRENT_TIMESTAMP WHERE id = $1', [admin.rows[0].id]);
     
     const token = jwt.sign(
       { id: admin.rows[0].id, type: 'admin' },
       process.env.JWT_SECRET,
-      { expiresIn: process.env.JWT_EXPIRE }
+      { expiresIn: '30d' }
     );
     
     res.json({
@@ -396,7 +396,7 @@ app.post('/api/auth/admin/login', async (req, res) => {
   }
 });
 
-// Logout (update online status)
+// Logout
 app.post('/api/auth/logout', async (req, res) => {
   const { userId, adminId } = req.body;
   
@@ -414,7 +414,9 @@ app.post('/api/auth/logout', async (req, res) => {
   }
 });
 
-// Get dashboard stats (admin only)
+// ==================== ADMIN ROUTES ====================
+
+// Get dashboard stats
 app.get('/api/admin/stats', authenticateAdmin, async (req, res) => {
   try {
     const totalUsers = await pool.query('SELECT COUNT(*) FROM users');
@@ -434,9 +436,9 @@ app.get('/api/admin/stats', authenticateAdmin, async (req, res) => {
   }
 });
 
-// Get all users with last message (admin)
+// Get all users
 app.get('/api/admin/users', authenticateAdmin, async (req, res) => {
-  const { filter } = req.query; // 'unread' or 'all'
+  const { filter } = req.query;
   
   try {
     const users = await pool.query(`
@@ -476,7 +478,7 @@ app.get('/api/admin/users', authenticateAdmin, async (req, res) => {
   }
 });
 
-// Get direct messages between admin and user
+// Get direct messages
 app.get('/api/messages/direct/:userId', authenticateAdmin, async (req, res) => {
   const { userId } = req.params;
   
@@ -494,7 +496,9 @@ app.get('/api/messages/direct/:userId', authenticateAdmin, async (req, res) => {
   }
 });
 
-// Get channel messages for user
+// ==================== USER ROUTES ====================
+
+// Get channel messages
 app.get('/api/channel/messages', authenticateUser, async (req, res) => {
   try {
     const messages = await pool.query(`
@@ -515,77 +519,13 @@ app.get('/api/channel/messages', authenticateUser, async (req, res) => {
   }
 });
 
-// Get channel members count
+// Get channel members
 app.get('/api/channel/members', async (req, res) => {
   try {
     const result = await pool.query('SELECT COUNT(*) FROM users WHERE is_online = true');
     res.json({ online: parseInt(result.rows[0].count) });
   } catch (error) {
     console.error('Get members error:', error);
-    res.status(500).json({ error: 'Server error' });
-  }
-});
-
-// Send channel message (admin only)
-app.post('/api/channel/send', authenticateAdmin, upload.single('media'), async (req, res) => {
-  const { content } = req.body;
-  const mediaFile = req.file;
-  
-  try {
-    const messageId = 'CH-' + Date.now() + '-' + uuidv4();
-    let mediaUrl = null;
-    let mediaType = 'text';
-    
-    if (mediaFile) {
-      mediaType = mediaFile.mimetype.startsWith('image/') ? 'image' : 'video';
-      mediaUrl = `/uploads/${mediaType}s/${mediaFile.filename}`;
-    }
-    
-    const message = await pool.query(
-      'INSERT INTO channel_messages (message_id, content, media_url, media_type, sent_by) VALUES ($1, $2, $3, $4, $5) RETURNING *',
-      [messageId, content || null, mediaUrl, mediaType, req.admin.id]
-    );
-    
-    // Get all online users for notification
-    const onlineUsers = await pool.query('SELECT id FROM users WHERE is_online = true');
-    
-    // Emit to all users
-    io.emit('channel-message', {
-      ...message.rows[0],
-      is_read: false
-    });
-    
-    // Send notifications to online users
-    onlineUsers.rows.forEach(user => {
-      io.to(`user-${user.id}`).emit('notification', {
-        title: 'Channel',
-        body: content || 'New media message',
-        sound: true,
-        vibrate: true
-      });
-    });
-    
-    res.json(message.rows[0]);
-  } catch (error) {
-    console.error('Send channel message error:', error);
-    res.status(500).json({ error: 'Server error' });
-  }
-});
-
-// Delete channel message (admin only)
-app.delete('/api/channel/message/:messageId', authenticateAdmin, async (req, res) => {
-  const { messageId } = req.params;
-  
-  try {
-    await pool.query(
-      'UPDATE channel_messages SET is_deleted = true, deleted_at = CURRENT_TIMESTAMP WHERE id = $1',
-      [messageId]
-    );
-    
-    io.emit('channel-message-deleted', { messageId });
-    res.json({ success: true });
-  } catch (error) {
-    console.error('Delete message error:', error);
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -606,7 +546,9 @@ app.post('/api/channel/mark-read/:messageId', authenticateUser, async (req, res)
   }
 });
 
-// Send direct message (admin to user or user to admin)
+// ==================== MESSAGE ROUTES ====================
+
+// Send message from user to admin
 app.post('/api/messages/send', authenticateUser, async (req, res) => {
   const { content, adminId } = req.body;
   
@@ -615,7 +557,6 @@ app.post('/api/messages/send', authenticateUser, async (req, res) => {
   }
   
   try {
-    // Check if user is blocked
     const blocked = await pool.query('SELECT * FROM blocked_users WHERE user_id = $1', [req.user.id]);
     if (blocked.rows.length > 0 && !blocked.rows[0].is_permanently_blocked) {
       return res.status(403).json({ error: 'You are blocked from sending messages' });
@@ -628,7 +569,6 @@ app.post('/api/messages/send', authenticateUser, async (req, res) => {
       [messageId, req.user.id, adminId, content, false]
     );
     
-    // Emit to admin
     io.to('admin-room').emit('direct-message', {
       ...message.rows[0],
       user: {
@@ -638,7 +578,6 @@ app.post('/api/messages/send', authenticateUser, async (req, res) => {
       }
     });
     
-    // Send notification to admin
     io.to('admin-room').emit('notification', {
       title: 'New Message',
       body: `${req.user.first_name} ${req.user.last_name}: ${content.substring(0, 50)}${content.length > 50 ? '...' : ''}`,
@@ -646,14 +585,14 @@ app.post('/api/messages/send', authenticateUser, async (req, res) => {
       vibrate: true
     });
     
-    res.json(message.rows[0]);
+    res.json({ success: true, ...message.rows[0] });
   } catch (error) {
     console.error('Send message error:', error);
     res.status(500).json({ error: 'Server error' });
   }
 });
 
-// Admin send direct message to user
+// Send message from admin to user
 app.post('/api/admin/messages/send', authenticateAdmin, async (req, res) => {
   const { content, userId } = req.body;
   
@@ -669,7 +608,6 @@ app.post('/api/admin/messages/send', authenticateAdmin, async (req, res) => {
       [messageId, userId, req.admin.id, content, true]
     );
     
-    // Emit to specific user
     io.to(`user-${userId}`).emit('direct-message', {
       ...message.rows[0],
       admin: {
@@ -678,7 +616,6 @@ app.post('/api/admin/messages/send', authenticateAdmin, async (req, res) => {
       }
     });
     
-    // Send notification to user
     io.to(`user-${userId}`).emit('notification', {
       title: 'Admin',
       body: content.substring(0, 50) + (content.length > 50 ? '...' : ''),
@@ -686,19 +623,83 @@ app.post('/api/admin/messages/send', authenticateAdmin, async (req, res) => {
       vibrate: true
     });
     
-    res.json(message.rows[0]);
+    res.json({ success: true, ...message.rows[0] });
   } catch (error) {
     console.error('Admin send message error:', error);
     res.status(500).json({ error: 'Server error' });
   }
 });
 
+// ==================== CHANNEL ROUTES ====================
+
+// Send channel message
+app.post('/api/channel/send', authenticateAdmin, upload.single('media'), async (req, res) => {
+  const { content } = req.body;
+  const mediaFile = req.file;
+  
+  try {
+    const messageId = 'CH-' + Date.now() + '-' + uuidv4();
+    let mediaUrl = null;
+    let mediaType = 'text';
+    
+    if (mediaFile) {
+      mediaType = mediaFile.mimetype.startsWith('image/') ? 'image' : 'video';
+      mediaUrl = `/uploads/${mediaType}s/${mediaFile.filename}`;
+    }
+    
+    const message = await pool.query(
+      'INSERT INTO channel_messages (message_id, content, media_url, media_type, sent_by) VALUES ($1, $2, $3, $4, $5) RETURNING *',
+      [messageId, content || null, mediaUrl, mediaType, req.admin.id]
+    );
+    
+    const onlineUsers = await pool.query('SELECT id FROM users WHERE is_online = true');
+    
+    io.emit('channel-message', {
+      ...message.rows[0],
+      is_read: false
+    });
+    
+    onlineUsers.rows.forEach(user => {
+      io.to(`user-${user.id}`).emit('notification', {
+        title: 'Channel',
+        body: content || 'New media message',
+        sound: true,
+        vibrate: true
+      });
+    });
+    
+    res.json(message.rows[0]);
+  } catch (error) {
+    console.error('Send channel message error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Delete channel message
+app.delete('/api/channel/message/:messageId', authenticateAdmin, async (req, res) => {
+  const { messageId } = req.params;
+  
+  try {
+    await pool.query(
+      'UPDATE channel_messages SET is_deleted = true, deleted_at = CURRENT_TIMESTAMP WHERE id = $1',
+      [messageId]
+    );
+    
+    io.emit('channel-message-deleted', { messageId });
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Delete message error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// ==================== BLOCK/REVIEW ROUTES ====================
+
 // Block user
 app.post('/api/admin/user/block/:userId', authenticateAdmin, async (req, res) => {
   const { userId } = req.params;
   
   try {
-    // Check if already blocked
     const existing = await pool.query('SELECT * FROM blocked_users WHERE user_id = $1', [userId]);
     
     if (existing.rows.length > 0) {
@@ -713,10 +714,8 @@ app.post('/api/admin/user/block/:userId', authenticateAdmin, async (req, res) =>
       );
     }
     
-    // Update user block status
     await pool.query('UPDATE users SET is_blocked = true WHERE id = $1', [userId]);
     
-    // Notify user
     io.to(`user-${userId}`).emit('user-blocked', {
       message: 'You have been blocked by admin'
     });
@@ -750,7 +749,6 @@ app.post('/api/admin/user/unblock/:userId', authenticateAdmin, async (req, res) 
 // Request review
 app.post('/api/user/request-review', authenticateUser, async (req, res) => {
   try {
-    // Check current attempts
     const blocked = await pool.query('SELECT * FROM blocked_users WHERE user_id = $1', [req.user.id]);
     
     if (blocked.rows.length === 0) {
@@ -767,7 +765,6 @@ app.post('/api/user/request-review', authenticateUser, async (req, res) => {
       return res.status(403).json({ error: 'Maximum review attempts reached' });
     }
     
-    // Check cooldown (6 hours)
     if (blocked.rows[0].last_review_request) {
       const lastRequest = new Date(blocked.rows[0].last_review_request);
       const hoursSinceLast = (Date.now() - lastRequest) / (1000 * 60 * 60);
@@ -781,19 +778,16 @@ app.post('/api/user/request-review', authenticateUser, async (req, res) => {
       }
     }
     
-    // Create review request
     await pool.query(
       'INSERT INTO review_requests (user_id, attempt_number) VALUES ($1, $2)',
       [req.user.id, attempts + 1]
     );
     
-    // Update blocked users
     await pool.query(
       'UPDATE blocked_users SET review_attempts = review_attempts + 1, last_review_request = CURRENT_TIMESTAMP WHERE user_id = $1',
       [req.user.id]
     );
     
-    // Notify admin
     io.to('admin-room').emit('review-request', {
       userId: req.user.id,
       userName: `${req.user.first_name} ${req.user.last_name}`,
@@ -811,10 +805,10 @@ app.post('/api/user/request-review', authenticateUser, async (req, res) => {
   }
 });
 
-// Handle review request (admin)
+// Handle review request
 app.post('/api/admin/handle-review/:requestId', authenticateAdmin, async (req, res) => {
   const { requestId } = req.params;
-  const { action } = req.body; // 'approve' or 'reject'
+  const { action } = req.body;
   
   try {
     const request = await pool.query('SELECT * FROM review_requests WHERE id = $1', [requestId]);
@@ -826,7 +820,6 @@ app.post('/api/admin/handle-review/:requestId', authenticateAdmin, async (req, r
     const userId = request.rows[0].user_id;
     
     if (action === 'approve') {
-      // Unblock user
       await pool.query('DELETE FROM blocked_users WHERE user_id = $1', [userId]);
       await pool.query('UPDATE users SET is_blocked = false WHERE id = $1', [userId]);
       
@@ -834,7 +827,6 @@ app.post('/api/admin/handle-review/:requestId', authenticateAdmin, async (req, r
         message: 'Your review request was approved. You can now send messages.'
       });
     } else {
-      // Check if this was the 3rd attempt
       const blocked = await pool.query('SELECT review_attempts FROM blocked_users WHERE user_id = $1', [userId]);
       
       if (blocked.rows[0].review_attempts >= 3) {
@@ -844,7 +836,7 @@ app.post('/api/admin/handle-review/:requestId', authenticateAdmin, async (req, r
       io.to(`user-${userId}`).emit('review-rejected', {
         message: 'Your review request was rejected',
         attemptsLeft: 3 - blocked.rows[0].review_attempts,
-        cooldown: 6 // hours
+        cooldown: 6
       });
     }
     
@@ -888,13 +880,11 @@ app.get('/api/user/block-status', authenticateUser, async (req, res) => {
 
 // ==================== SOCKET.IO ====================
 
-// Track online users
 const onlineUsers = new Map();
 
 io.on('connection', (socket) => {
   console.log('New connection:', socket.id);
   
-  // User joins with their ID
   socket.on('user-online', async (data) => {
     const { userId, userType } = data;
     
@@ -902,10 +892,8 @@ io.on('connection', (socket) => {
       socket.join(`user-${userId}`);
       onlineUsers.set(userId, { socketId: socket.id, type: 'user' });
       
-      // Update in database
       await pool.query('UPDATE users SET is_online = true, last_seen = CURRENT_TIMESTAMP WHERE id = $1', [userId]);
       
-      // Notify admin
       io.to('admin-room').emit('user-status-change', {
         userId,
         isOnline: true
@@ -914,16 +902,14 @@ io.on('connection', (socket) => {
       socket.join('admin-room');
       onlineUsers.set(`admin-${userId}`, { socketId: socket.id, type: 'admin' });
       
-      // Update in database
-      await pool.query('UPDATE admins SET is_online = true, last_seen = CURRENT_TIMESTAMP WHERE id = $1', [userId]);
+      // DON'T update admin online status on every connection - prevents logout issues
+      console.log('Admin connected:', userId);
     }
     
-    // Broadcast online count
     const onlineCount = Array.from(onlineUsers.values()).filter(u => u.type === 'user').length;
     io.emit('online-count', onlineCount);
   });
   
-  // Typing indicator
   socket.on('typing', (data) => {
     const { userId, isTyping, recipientId, isAdmin } = data;
     
@@ -934,7 +920,6 @@ io.on('connection', (socket) => {
     }
   });
   
-  // Mark messages as read
   socket.on('mark-read', async (data) => {
     const { messageIds, userId, isAdmin } = data;
     
@@ -952,11 +937,9 @@ io.on('connection', (socket) => {
     }
   });
   
-  // Disconnect
   socket.on('disconnect', async () => {
     console.log('Disconnected:', socket.id);
     
-    // Find and update user
     for (let [userId, data] of onlineUsers.entries()) {
       if (data.socketId === socket.id) {
         if (data.type === 'user') {
@@ -966,15 +949,14 @@ io.on('connection', (socket) => {
             isOnline: false
           });
         } else if (data.type === 'admin') {
-          const adminId = userId.replace('admin-', '');
-          await pool.query('UPDATE admins SET is_online = false, last_seen = CURRENT_TIMESTAMP WHERE id = $1', [adminId]);
+          // DO NOT update admin online status on disconnect - this prevents logout
+          console.log('Admin disconnected but staying logged in:', userId);
         }
         onlineUsers.delete(userId);
         break;
       }
     }
     
-    // Broadcast updated online count
     const onlineCount = Array.from(onlineUsers.values()).filter(u => u.type === 'user').length;
     io.emit('online-count', onlineCount);
   });
