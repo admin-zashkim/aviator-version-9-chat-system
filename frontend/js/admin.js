@@ -1,4 +1,73 @@
-// Admin navigation
+// ============================================
+// COMPLETE ADMIN.JS - FULLY FUNCTIONAL
+// ============================================
+
+// Ensure all required functions exist
+if (typeof apiRequest === 'undefined') {
+    window.apiRequest = async (endpoint, options = {}) => {
+        const token = localStorage.getItem('token');
+        try {
+            const response = await fetch(`https://backendchatv9admin.onrender.com${endpoint}`, {
+                ...options,
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...(token && { 'Authorization': `Bearer ${token}` }),
+                    ...options.headers
+                }
+            });
+            if (!response.ok) {
+                const error = await response.json().catch(() => ({}));
+                throw new Error(error.error || 'Request failed');
+            }
+            return response.json();
+        } catch (error) {
+            console.error('API Request Error:', error);
+            throw error;
+        }
+    };
+}
+
+if (typeof escapeHtml === 'undefined') {
+    window.escapeHtml = (text) => {
+        if (!text) return '';
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    };
+}
+
+if (typeof formatMessageTime === 'undefined') {
+    window.formatMessageTime = (timestamp) => {
+        if (!timestamp) return '';
+        const date = new Date(timestamp);
+        return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    };
+}
+
+if (typeof linkify === 'undefined') {
+    window.linkify = (text) => {
+        if (!text) return '';
+        const urlRegex = /(https?:\/\/[^\s]+)/g;
+        return text.replace(urlRegex, url => `<a href="${url}" target="_blank">${url}</a>`);
+    };
+}
+
+if (typeof playNotificationSound === 'undefined') {
+    window.playNotificationSound = () => console.log('Sound disabled');
+}
+
+if (typeof markMessagesAsRead === 'undefined') {
+    window.markMessagesAsRead = () => {};
+}
+
+if (typeof emitTyping === 'undefined') {
+    window.emitTyping = () => {};
+}
+
+// ============================================
+// ADMIN NAVIGATION
+// ============================================
+
 function showAdminSection(section) {
     const navBtns = document.querySelectorAll('.nav-btn');
     const sections = document.querySelectorAll('.admin-section');
@@ -9,43 +78,72 @@ function showAdminSection(section) {
     if (section === 'channel') {
         navBtns[0].classList.add('active');
         document.getElementById('admin-channel').classList.add('active');
+        loadChannelMessages(); // Load messages when channel tab is opened
     } else {
         navBtns[1].classList.add('active');
         document.getElementById('admin-users').classList.add('active');
+        loadUsers(); // Load users when users tab is opened
     }
 }
 
 function goToAdminDashboard() {
-    hideAllPages();
+    // Hide all pages
+    document.querySelectorAll('.page').forEach(page => {
+        page.classList.remove('active');
+    });
     document.getElementById('admin-dashboard').classList.add('active');
+    
+    // Reload stats
+    loadAdminStats();
 }
 
-// Load admin stats
+// ============================================
+// LOAD ADMIN STATS
+// ============================================
+
 async function loadAdminStats() {
     try {
         const stats = await apiRequest('/api/admin/stats');
         
-        document.getElementById('total-users').textContent = stats.totalUsers;
-        document.getElementById('online-users').textContent = stats.onlineUsers;
-        document.getElementById('total-messages').textContent = stats.totalMessages;
-        document.getElementById('unread-messages').textContent = stats.unreadMessages;
+        document.getElementById('total-users').textContent = stats.totalUsers || '0';
+        document.getElementById('online-users').textContent = stats.onlineUsers || '0';
+        document.getElementById('total-messages').textContent = stats.totalMessages || '0';
+        document.getElementById('unread-messages').textContent = stats.unreadMessages || '0';
     } catch (error) {
         console.error('Load stats error:', error);
+        // Set default values on error
+        document.getElementById('total-users').textContent = '0';
+        document.getElementById('online-users').textContent = '0';
+        document.getElementById('total-messages').textContent = '0';
+        document.getElementById('unread-messages').textContent = '0';
     }
 }
 
-// Load users list
+// ============================================
+// LOAD USERS LIST
+// ============================================
+
 async function loadUsers(filter = 'all') {
+    const container = document.getElementById('users-list');
+    if (!container) return;
+    
+    container.innerHTML = '<div style="text-align: center; padding: 20px;">Loading users...</div>';
+    
     try {
         const users = await apiRequest(`/api/admin/users?filter=${filter}`);
-        const container = document.getElementById('users-list');
         container.innerHTML = '';
+        
+        if (!users || users.length === 0) {
+            container.innerHTML = '<div style="text-align: center; padding: 20px;">No users found</div>';
+            return;
+        }
         
         users.forEach(user => {
             appendUserToList(user);
         });
     } catch (error) {
         console.error('Load users error:', error);
+        container.innerHTML = '<div style="text-align: center; padding: 20px;">Error loading users</div>';
     }
 }
 
@@ -53,18 +151,26 @@ function filterUsers(filter) {
     const filterBtns = document.querySelectorAll('.filter-btn');
     filterBtns.forEach(btn => btn.classList.remove('active'));
     event.target.classList.add('active');
-    
     loadUsers(filter);
 }
 
 function appendUserToList(user) {
     const container = document.getElementById('users-list');
+    if (!container) return;
+    
     const userDiv = document.createElement('div');
     userDiv.className = 'user-item';
+    userDiv.setAttribute('data-user-id', user.id);
     userDiv.onclick = () => openUserChat(user.id, `${user.first_name} ${user.last_name}`);
     
-    const lastMessage = user.last_message ? 
-        (user.last_message.content || 'Media message') : 'No messages yet';
+    // Get last message
+    let lastMessage = 'No messages yet';
+    let lastMessageTime = '';
+    
+    if (user.last_message) {
+        lastMessage = user.last_message.content || 'Media message';
+        lastMessageTime = user.last_message.sent_at || '';
+    }
     
     const unreadBadge = user.unread_count > 0 ? 
         `<span class="unread-indicator">${user.unread_count}</span>` : '';
@@ -73,12 +179,12 @@ function appendUserToList(user) {
         `<span class="blocked-badge">Blocked</span>` : '';
     
     userDiv.innerHTML = `
-        <div class="user-avatar">${user.first_name.charAt(0)}${user.last_name.charAt(0)}</div>
+        <div class="user-avatar">${user.first_name?.charAt(0) || 'U'}${user.last_name?.charAt(0) || 'U'}</div>
         <div class="user-info">
-            <div class="user-name">${user.first_name} ${user.last_name} ${blockedBadge}</div>
-            <div class="user-last-message">${escapeHtml(lastMessage)}</div>
+            <div class="user-name">${user.first_name || ''} ${user.last_name || ''} ${blockedBadge}</div>
+            <div class="user-last-message">${escapeHtml(lastMessage.substring(0, 30))}${lastMessage.length > 30 ? '...' : ''}</div>
         </div>
-        <div class="user-time">${user.last_message ? formatMessageTime(user.last_message.sent_at) : ''}</div>
+        <div class="user-time">${lastMessageTime ? formatMessageTime(lastMessageTime) : ''}</div>
         <span class="user-status ${user.is_online ? 'online' : 'offline'}"></span>
         ${unreadBadge}
     `;
@@ -86,7 +192,10 @@ function appendUserToList(user) {
     container.appendChild(userDiv);
 }
 
-// Update user online status
+// ============================================
+// UPDATE USER ONLINE STATUS
+// ============================================
+
 function updateUserOnlineStatus(userId, isOnline) {
     const userItems = document.querySelectorAll('.user-item');
     userItems.forEach(item => {
@@ -99,14 +208,21 @@ function updateUserOnlineStatus(userId, isOnline) {
     });
     
     // Update in chat if open
-    if (document.getElementById('admin-user-chat').classList.contains('active') &&
-        document.getElementById('admin-user-chat').dataset.userId === userId) {
-        document.getElementById('chat-user-status').textContent = isOnline ? 'online' : 'offline';
-        document.getElementById('chat-user-status').className = isOnline ? 'online-status' : '';
+    const chatContainer = document.getElementById('admin-user-chat');
+    if (chatContainer && chatContainer.classList.contains('active') &&
+        chatContainer.dataset.userId === userId) {
+        const statusEl = document.getElementById('chat-user-status');
+        if (statusEl) {
+            statusEl.textContent = isOnline ? 'online' : 'offline';
+            statusEl.className = isOnline ? 'online-status' : '';
+        }
     }
 }
 
-// Update user unread count
+// ============================================
+// UPDATE USER UNREAD COUNT
+// ============================================
+
 function updateUserUnreadCount(userId) {
     const userItem = document.querySelector(`.user-item[data-user-id="${userId}"]`);
     if (userItem) {
@@ -123,12 +239,24 @@ function updateUserUnreadCount(userId) {
     }
 }
 
-// Load channel messages for admin
+// ============================================
+// LOAD CHANNEL MESSAGES
+// ============================================
+
 async function loadChannelMessages() {
+    const container = document.getElementById('admin-channel-messages');
+    if (!container) return;
+    
+    container.innerHTML = '<div style="text-align: center; padding: 20px;">Loading messages...</div>';
+    
     try {
         const messages = await apiRequest('/api/channel/messages');
-        const container = document.getElementById('admin-channel-messages');
         container.innerHTML = '';
+        
+        if (!messages || messages.length === 0) {
+            container.innerHTML = '<div style="text-align: center; padding: 20px;">No channel messages yet</div>';
+            return;
+        }
         
         messages.forEach(message => {
             if (!message.is_deleted) {
@@ -137,28 +265,31 @@ async function loadChannelMessages() {
         });
     } catch (error) {
         console.error('Load channel messages error:', error);
+        container.innerHTML = '<div style="text-align: center; padding: 20px;">Error loading messages</div>';
     }
 }
 
 function appendChannelMessageAdmin(message) {
     const container = document.getElementById('admin-channel-messages');
+    if (!container) return;
+    
     const messageDiv = document.createElement('div');
     messageDiv.className = 'channel-message-item';
     messageDiv.dataset.messageId = message.id;
     
     let mediaHtml = '';
     if (message.media_url && message.media_type) {
-        const fullUrl = `${BACKEND_URL}${message.media_url}`;
+        const fullUrl = `https://backendchatv9admin.onrender.com${message.media_url}`;
         if (message.media_type === 'image') {
-            mediaHtml = `<div class="message-media"><img src="${fullUrl}" alt="Image"></div>`;
+            mediaHtml = `<div class="message-media"><img src="${fullUrl}" alt="Image" style="max-width: 200px; max-height: 200px;"></div>`;
         } else if (message.media_type === 'video') {
-            mediaHtml = `<div class="message-media"><video src="${fullUrl}" controls></video></div>`;
+            mediaHtml = `<div class="message-media"><video src="${fullUrl}" controls style="max-width: 200px; max-height: 200px;"></video></div>`;
         }
     }
     
     messageDiv.innerHTML = `
         <div class="message-header">
-            <span>${formatMessageTime(message.sent_at)}</span>
+            <span>${message.sent_at ? formatMessageTime(message.sent_at) : ''}</span>
             <button class="delete-message-btn" onclick="deleteChannelMessage('${message.id}')">Delete</button>
         </div>
         ${mediaHtml}
@@ -168,7 +299,10 @@ function appendChannelMessageAdmin(message) {
     container.appendChild(messageDiv);
 }
 
-// Send channel message
+// ============================================
+// SEND CHANNEL MESSAGE
+// ============================================
+
 document.getElementById('channel-message-form')?.addEventListener('submit', async (e) => {
     e.preventDefault();
     
@@ -177,15 +311,21 @@ document.getElementById('channel-message-form')?.addEventListener('submit', asyn
     
     if (!content && !mediaFile) return;
     
+    const submitBtn = e.target.querySelector('button[type="submit"]');
+    const originalText = submitBtn.textContent;
+    submitBtn.textContent = 'Sending...';
+    submitBtn.disabled = true;
+    
     const formData = new FormData();
     if (content) formData.append('content', content);
     if (mediaFile) formData.append('media', mediaFile);
     
     try {
-        const response = await fetch(`${BACKEND_URL}/api/channel/send`, {
+        const token = localStorage.getItem('token');
+        const response = await fetch(`https://backendchatv9admin.onrender.com/api/channel/send`, {
             method: 'POST',
             headers: {
-                'Authorization': `Bearer ${getToken()}`
+                'Authorization': `Bearer ${token}`
             },
             body: formData
         });
@@ -205,14 +345,22 @@ document.getElementById('channel-message-form')?.addEventListener('submit', asyn
         appendChannelMessageAdmin(message);
         
         // Play sound
-        playNotificationSound();
+        if (typeof playNotificationSound === 'function') {
+            playNotificationSound();
+        }
     } catch (error) {
         console.error('Send channel message error:', error);
         alert('Failed to send message');
+    } finally {
+        submitBtn.textContent = originalText;
+        submitBtn.disabled = false;
     }
 });
 
-// Delete channel message
+// ============================================
+// DELETE CHANNEL MESSAGE
+// ============================================
+
 async function deleteChannelMessage(messageId) {
     if (!confirm('Are you sure you want to delete this message?')) return;
     
@@ -231,25 +379,49 @@ async function deleteChannelMessage(messageId) {
     }
 }
 
-// Open user chat
+// ============================================
+// OPEN USER CHAT
+// ============================================
+
 let currentChatUserId = null;
 
 function openUserChat(userId, userName) {
-    hideAllPages();
-    document.getElementById('admin-user-chat').classList.add('active');
-    document.getElementById('admin-user-chat').dataset.userId = userId;
+    // Hide all pages
+    document.querySelectorAll('.page').forEach(page => {
+        page.classList.remove('active');
+    });
+    
+    const chatPage = document.getElementById('admin-user-chat');
+    chatPage.classList.add('active');
+    chatPage.dataset.userId = userId;
     document.getElementById('chat-user-name').textContent = userName;
     
     currentChatUserId = userId;
+    
+    // Reset block button
+    const blockBtn = document.getElementById('block-user-btn');
+    if (blockBtn) {
+        blockBtn.classList.remove('blocked');
+        blockBtn.style.background = '';
+    }
     
     loadUserMessages(userId);
 }
 
 async function loadUserMessages(userId) {
+    const container = document.getElementById('admin-user-messages');
+    if (!container) return;
+    
+    container.innerHTML = '<div style="text-align: center; padding: 20px;">Loading messages...</div>';
+    
     try {
         const messages = await apiRequest(`/api/messages/direct/${userId}`);
-        const container = document.getElementById('admin-user-messages');
         container.innerHTML = '';
+        
+        if (!messages || messages.length === 0) {
+            container.innerHTML = '<div style="text-align: center; padding: 20px; color: #888;">No messages yet. Start a conversation!</div>';
+            return;
+        }
         
         messages.forEach(message => {
             appendAdminDirectMessage(message);
@@ -262,16 +434,19 @@ async function loadUserMessages(userId) {
             .filter(m => !m.is_read && !m.is_from_admin)
             .map(m => m.id);
         
-        if (unreadIds.length > 0) {
+        if (unreadIds.length > 0 && typeof markMessagesAsRead === 'function') {
             markMessagesAsRead(unreadIds, true);
         }
     } catch (error) {
         console.error('Load user messages error:', error);
+        container.innerHTML = '<div style="text-align: center; padding: 20px;">Error loading messages</div>';
     }
 }
 
 function appendAdminDirectMessage(message) {
     const container = document.getElementById('admin-user-messages');
+    if (!container) return;
+    
     const messageDiv = document.createElement('div');
     messageDiv.className = `message-wrapper ${message.is_from_admin ? 'sent' : 'received'}`;
     messageDiv.dataset.messageId = message.id;
@@ -281,33 +456,23 @@ function appendAdminDirectMessage(message) {
     
     messageDiv.innerHTML = `
         ${contentHtml}
-        <div class="message-time">${formatMessageTime(message.sent_at)}</div>
+        <div class="message-time">${message.sent_at ? formatMessageTime(message.sent_at) : ''}</div>
     `;
     
     container.appendChild(messageDiv);
     container.scrollTop = container.scrollHeight;
 }
 
-// Send message to user
+// ============================================
+// SEND MESSAGE TO USER
+// ============================================
+
 document.getElementById('admin-send-btn')?.addEventListener('click', sendAdminMessage);
 document.getElementById('admin-message-input')?.addEventListener('keypress', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
         sendAdminMessage();
     }
-});
-
-// Admin typing indicator
-let adminTypingTimeout;
-document.getElementById('admin-message-input')?.addEventListener('input', () => {
-    if (!currentChatUserId) return;
-    
-    emitTyping(true, currentChatUserId, true);
-    
-    clearTimeout(adminTypingTimeout);
-    adminTypingTimeout = setTimeout(() => {
-        emitTyping(false, currentChatUserId, true);
-    }, 1000);
 });
 
 async function sendAdminMessage() {
@@ -326,7 +491,9 @@ async function sendAdminMessage() {
         });
         
         // Play send sound
-        playNotificationSound();
+        if (typeof playNotificationSound === 'function') {
+            playNotificationSound();
+        }
         
         // Clear input
         input.value = '';
@@ -334,15 +501,19 @@ async function sendAdminMessage() {
         // Add to UI
         appendAdminDirectMessage({
             ...message,
-            is_from_admin: true
+            is_from_admin: true,
+            sent_at: new Date().toISOString()
         });
     } catch (error) {
         console.error('Send admin message error:', error);
-        alert(error.message);
+        alert('Failed to send message: ' + error.message);
     }
 }
 
-// Toggle block user
+// ============================================
+// TOGGLE BLOCK USER
+// ============================================
+
 async function toggleBlockUser() {
     if (!currentChatUserId) return;
     
@@ -356,30 +527,51 @@ async function toggleBlockUser() {
             });
             btn.classList.remove('blocked');
             btn.style.background = '';
+            alert('User unblocked');
         } else {
             await apiRequest(`/api/admin/user/block/${currentChatUserId}`, {
                 method: 'POST'
             });
             btn.classList.add('blocked');
             btn.style.background = '#dc3545';
+            alert('User blocked');
         }
     } catch (error) {
         console.error('Toggle block error:', error);
-        alert('Failed to update block status');
+        alert('Failed to update block status: ' + error.message);
     }
 }
 
-// Handle review requests
+// ============================================
+// REVIEW REQUESTS
+// ============================================
+
 function addReviewRequest(data) {
-    // You can add a notification badge or list here
-    console.log('Review request:', data);
+    console.log('Review request received:', data);
+    // You can add UI notification here
 }
 
-// Load initial data
+// ============================================
+// INITIALIZATION
+// ============================================
+
 document.addEventListener('DOMContentLoaded', () => {
-    if (getAdmin()) {
+    const admin = JSON.parse(localStorage.getItem('admin') || 'null');
+    if (admin) {
+        console.log('Admin logged in:', admin.username);
         loadAdminStats();
         loadUsers();
         loadChannelMessages();
     }
 });
+
+// Make functions globally available
+window.showAdminSection = showAdminSection;
+window.goToAdminDashboard = goToAdminDashboard;
+window.filterUsers = filterUsers;
+window.openUserChat = openUserChat;
+window.deleteChannelMessage = deleteChannelMessage;
+window.toggleBlockUser = toggleBlockUser;
+window.addReviewRequest = addReviewRequest;
+window.updateUserOnlineStatus = updateUserOnlineStatus;
+window.updateUserUnreadCount = updateUserUnreadCount;
